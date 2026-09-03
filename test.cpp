@@ -63,15 +63,15 @@ enum class button_states
     OPEN
 };
 
-enum buttons
-{
-    START = 0,
-    W1 = 2,
-    W2 = 1,
-    W3 = 0,
-    W4 = 2,
-    OPEN = 5
-};
+// enum buttons
+// {
+//     START = 0,
+//     W1 = 2,
+//     W2 = 1,
+//     W3 = 0,
+//     W4 = 2,
+//     OPEN = 5
+// };
 
 bool wasPressed(data *d)
 {
@@ -109,35 +109,30 @@ void producer_task(void *param)
     }
 }
 
-
-
 /** The sequence to open the lock is 0-2-1-0-2 **/
 
-//void sm (button_states &bs, data* d)
-void sm (button_states &bs, int val)
+void sm (button_states &bs, const int val)
 {
     printf("The value in the queue:%d\n", val);
-
-    switch (b)
-    {
-        case START:
-        {
-
-        }
-
-    }
 
     switch (bs)
     {
         case button_states::START:
         {
+            for (int i = 0; i < 3; ++i)
+            {
+                gpio_put(LED1 + i, false);
+            }
             printf("Currently in the state START!\n");
             if (val == 0)
             {
                 bs = button_states::W1;
                 printf("Transferred to state W1!\n");
             }
-            else break;
+            else
+            {
+                break;
+            }
         }
         case button_states::W1:
         {
@@ -147,7 +142,10 @@ void sm (button_states &bs, int val)
                 bs = button_states::W2;
                 printf("Transferred to state W2\n");
             }
-            else break;
+            else
+            {
+                break;
+            }
         }
         case button_states::W2:
         {
@@ -157,7 +155,10 @@ void sm (button_states &bs, int val)
                 bs = button_states::W3;
                 printf("Transferred to state W3!\n");
             }
-            else break;
+            else
+            {
+                break;
+            }
         }
         case button_states::W3:
         {
@@ -167,7 +168,10 @@ void sm (button_states &bs, int val)
                 bs = button_states::W4;
                 printf("Transferred to state W4!\n");
             }
-            else break;
+            else
+            {
+                break;
+            }
         }
         case button_states::W4:
         {
@@ -177,27 +181,20 @@ void sm (button_states &bs, int val)
                 bs = button_states::OPEN;
                 printf("Transferred to state OPEN!\n");
             }
-            else break;
+            else
+            {
+                break;
+            }
         }
         case button_states::OPEN:
         {
             printf("Currently in the state OPEN!\n");
             printf("The lock is open!\n");
-            // The part below needs to be fixed ( right now all three processes call this func and switch all 3 leds on/off )
+            // The part below needs to be fixed (or maybe not)
             for (int i = 0; i < 3; ++i)
             {
                 gpio_put(LED1 + i, true);
             }
-            vTaskDelay(pdMS_TO_TICKS(5000));
-            for (int i = 0; i < 3; ++i)
-            {
-                gpio_put(LED1 + i, false);
-            }
-            if (val <= 2 && val >= 0)
-            { // If any button is pressed while lock is open the lock is closed immediately (LEDs switched off).
-                bs = button_states::START;
-            }
-            else break;
         }
     }
 }
@@ -212,20 +209,26 @@ void consumer_task(void *param)
         gpio_set_dir(LED1 + i, GPIO_OUT);
     }
 
-    static auto bs = button_states::START;
+    auto bs = button_states::START;
 
     while (true)
     {   /*If a button press is received the corresponding LED is lit for 200ms and
          *the press is processed as shown in the state diagram*/
-        auto rv = xQueueReceive(d->xQueue, d->pvBuffer, d->xTicksToWait);
+        const auto rv = xQueueReceive(d->xQueue, d->pvBuffer, d->xTicksToWait);
+        const uint led = LED1 + *d->pvBuffer;
         if (rv == pdPASS)
         {
-            gpio_put(*d->pvBuffer, true);
+            gpio_put(led, true);
             vTaskDelay(pdMS_TO_TICKS(200));
-            gpio_put(*d->pvBuffer, false);
+            gpio_put(led, false);
         }
-        if (rv == errQUEUE_EMPTY || *d->pvBuffer)
+        if (rv == errQUEUE_EMPTY)
         {
+            bs = button_states::START;
+        } // if in the open lock state somebody presses buttons 0-2 return to start state and switch off LEDs
+        if (bs == button_states::OPEN && *d->pvBuffer <= 2 && *d->pvBuffer >= 0)
+        {
+            printf("The open lock interrupted!\n");
             bs = button_states::START;
         }
         // call state machine
