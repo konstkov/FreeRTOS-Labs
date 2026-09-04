@@ -50,6 +50,7 @@ typedef struct data
     absolute_time_t last_press;
     bool last_pressed;
     uint button;
+    bool flag;
 } data;
 
 /** The sequence to open the lock is 0-2-1-0-2 **/
@@ -62,16 +63,6 @@ enum class button_states
     W4,
     OPEN
 };
-
-// enum buttons
-// {
-//     START = 0,
-//     W1 = 2,
-//     W2 = 1,
-//     W3 = 0,
-//     W4 = 2,
-//     OPEN = 5
-// };
 
 bool wasPressed(data *d)
 {
@@ -111,9 +102,9 @@ void producer_task(void *param)
 
 /** The sequence to open the lock is 0-2-1-0-2 **/
 
-void sm (button_states &bs, const int val)
+void sm (button_states &bs, data *d)
 {
-    printf("The value in the queue:%d\n", val);
+    printf("The value in the queue:%d\n", *d->pvBuffer);
 
     switch (bs)
     {
@@ -124,7 +115,7 @@ void sm (button_states &bs, const int val)
                 gpio_put(LED1 + i, false);
             }
             printf("Currently in the state START!\n");
-            if (val == 0)
+            if (*d->pvBuffer == 0)
             {
                 bs = button_states::W1;
                 printf("Transferred to state W1!\n");
@@ -137,52 +128,89 @@ void sm (button_states &bs, const int val)
         case button_states::W1:
         {
             printf("Currently in the state W1!\n");
-            if (val == 2)
+
+            if (*d->pvBuffer == 2  && d->flag)
             {
                 bs = button_states::W2;
                 printf("Transferred to state W2\n");
+                d->flag = false;
+            }
+            else if (*d->pvBuffer != 2  && d->flag)
+            {
+                bs = button_states::START;
+                printf("Sequence interrupted. Transferred to state START\n");
+                d->flag = false;
+                break;
             }
             else
             {
+                d->flag = true;
                 break;
             }
         }
         case button_states::W2:
         {
             printf("Currently in the state W2!\n");
-            if (val == 1)
+            if (*d->pvBuffer == 1  && d->flag)
             {
                 bs = button_states::W3;
-                printf("Transferred to state W3!\n");
+                printf("Transferred to state W3\n");
+                d->flag = false;
+            }
+            else if (*d->pvBuffer != 1  && d->flag)
+            {
+                bs = button_states::START;
+                printf("Sequence interrupted. Transferred to state START\n");
+                d->flag = false;
+                break;
             }
             else
             {
+                d->flag = true;
                 break;
             }
         }
         case button_states::W3:
         {
             printf("Currently in the state W3!\n");
-            if (val == 0)
+            if (*d->pvBuffer == 0  && d->flag)
             {
                 bs = button_states::W4;
-                printf("Transferred to state W4!\n");
+                printf("Transferred to state W4\n");
+                d->flag = false;
+            }
+            else if (*d->pvBuffer != 0  && d->flag)
+            {
+                bs = button_states::START;
+                printf("Sequence interrupted. Transferred to state START\n");
+                d->flag = false;
+                break;
             }
             else
             {
+                d->flag = true;
                 break;
             }
         }
         case button_states::W4:
         {
             printf("Currently in the state W4!\n");
-            if (val == 2)
+            if (*d->pvBuffer == 2  && d->flag)
             {
                 bs = button_states::OPEN;
-                printf("Transferred to state OPEN!\n");
+                printf("Transferred to state OPEN\n");
+                d->flag = false;
+            }
+            else if (*d->pvBuffer != 2  && d->flag)
+            {
+                bs = button_states::START;
+                printf("Sequence interrupted. Transferred to state START\n");
+                d->flag = false;
+                break;
             }
             else
             {
+                d->flag = true;
                 break;
             }
         }
@@ -203,6 +231,8 @@ void consumer_task(void *param)
 {
     const auto d = (data*) param;
 
+    d->flag = false; // default value
+
     for (int i = 0; i < 3; ++i)
     {
         gpio_init(LED1 + i);
@@ -222,17 +252,16 @@ void consumer_task(void *param)
             vTaskDelay(pdMS_TO_TICKS(200));
             gpio_put(led, false);
         }
-        if (rv == errQUEUE_EMPTY)
+        
+        if (rv == errQUEUE_EMPTY || bs == button_states::OPEN && *d->pvBuffer <= 2 && *d->pvBuffer >= 0)
         {
-            bs = button_states::START;
-        } // if in the open lock state somebody presses buttons 0-2 return to start state and switch off LEDs
-        if (bs == button_states::OPEN && *d->pvBuffer <= 2 && *d->pvBuffer >= 0)
-        {
-            printf("The open lock interrupted!\n");
+            *d->pvBuffer = -1;
             bs = button_states::START;
         }
+
         // call state machine
-        sm(bs, *d->pvBuffer);
+        sm(bs, d);
+
     }
 }
 
