@@ -1,5 +1,5 @@
 //
-// Created by Konstantin Kovalev on 27.8.2026.
+// Created by Konstantin Kovalev on 29.8.2026.
 //
 
 #include <cstdio>
@@ -17,132 +17,287 @@
 
 
 #define BUTTON_TIMEOUT 5000
-#define BUF_SIZE 32
+#define BUF_SIZE 5
+#define LED1 20
+#define SW1 7
+#define SW2 8
+#define SW3 9
 
 extern "C"
 {
-uint32_t read_runtime_ctr(void)
-{
-    return timer_hw->timerawl;
-}
+    uint32_t read_runtime_ctr(void)
+    {
+        return timer_hw->timerawl;
+    }
 }
 
 // stack overflow check
 extern "C"
 {
-void vApplicationStackOverflowHook( TaskHandle_t xTask, char * pcTaskName )
-{
-    if (pcTaskName != NULL) panic("Stack overflow: %s",pcTaskName);
-    else panic("Stack overflow of unnamed task");
-}
+    void vApplicationStackOverflowHook( TaskHandle_t xTask, char * pcTaskName )
+    {
+        if (pcTaskName != NULL) panic("Stack overflow: %s",pcTaskName);
+        else panic("Stack overflow of unnamed task");
+    }
 }
 
-/*struct led_params
-{
-    uint pin;
-    TickType_t delay;
-    uint button;
-    absolute_time_t last_press;
-    bool last_pressed;
-};*/
-
-struct queue_data
+typedef struct data
 {
     QueueHandle_t xQueue;
     int *pvItemToQueue;
     int pvBuffer[BUF_SIZE];
-    uint led;
-    uint button;
+    TickType_t xTicksToWait;
     absolute_time_t last_press;
     bool last_pressed;
-    TickType_t xTicksToWait;
+    uint button;
+    bool flag;
+} data;
+
+/** The sequence to open the lock is 0-2-1-0-2 **/
+enum class button_states
+{
+    START,
+    W1,
+    W2,
+    W3,
+    W4,
+    OPEN
 };
 
-bool wasPressed(queue_data *qd)
+bool wasPressed(data *d)
 {
-    bool pressed = !gpio_get(qd->button); // returns true if pressed (has pullup)
-       if (pressed && !qd->last_pressed && time_reached(qd->last_press)) // adjust timeout according to needs
+    const bool pressed = !gpio_get(d->button); // returns true if pressed (has pullup)
+    if (pressed && !d->last_pressed && time_reached(d->last_press)) // adjust timeout according to needs
     {
-        qd->last_press = get_absolute_time();
-        qd->last_pressed = pressed;
+        d->last_press = get_absolute_time();
+        d->last_pressed = pressed;
         return true;
     }
-    qd->last_pressed = pressed;
+    d->last_pressed = pressed;
     return false;
 }
 
-void button_task(void *param)
+void producer_task(void *param)
 {
-    const auto qd = (queue_data*) param;
+    auto d = (data*) param;
 
-    const uint led_pin = qd->led;
-    const uint button = qd->button;
+    /* init */
+    gpio_init(d->button);
+    gpio_set_dir(d->button, GPIO_IN);
+    gpio_pull_up(d->button);
+    d->last_press = nil_time;
+    d->last_pressed = !gpio_get(d->button);
 
-    gpio_init(led_pin);
-    gpio_set_dir(led_pin, GPIO_OUT);
-    gpio_init(button);
-    gpio_set_dir(button, GPIO_IN);
-    gpio_pull_up(button);
-
-    //if (wasPressed(qd))
-    //if (!gpio_get(button))
+    while (true)
     {
-        *qd->pvItemToQueue = 1;
-        xQueueSendToFront(qd->xQueue, qd->pvItemToQueue, qd->xTicksToWait);
-    }
-}
-
-void process_task(void *param)
-{
-    const auto qd = (queue_data*) param;
-
-    /* The size of each data item that the queue holds is set when the queue is created. The memory pointed
-to by pvBuffer must be at least large enough to hold that many bytes. */
-    xQueueReceive(qd->xQueue, qd->pvBuffer, qd->xTicksToWait);
-    for (const auto x : qd->pvBuffer)
-    {
-        if (x == 1)
+        //*d->pvItemToQueue = 0; // default value
+        if (wasPressed(d))
         {
-            gpio_put(qd->led, true);
-            vTaskDelay(pdMS_TO_TICKS(200));
-            gpio_put(qd->led, false);
+            printf("Button pressed!\n");
+            auto val = (int)d->button - SW1;
+            xQueueSendToFront(d->xQueue, &val, d->xTicksToWait);
         }
     }
 }
 
-/*BaseType_t xQueueSendToFront( QueueHandle_t xQueue,
-const void * pvItemToQueue,
-TickType_t xTicksToWait );*/
+/** The sequence to open the lock is 0-2-1-0-2 **/
+
+void sm (button_states &bs, data *d)
+{
+    printf("The value in the queue:%d\n", *d->pvBuffer);
+
+    switch (bs)
+    {
+        case button_states::START:
+        {
+            for (int i = 0; i < 3; ++i)
+            {
+                gpio_put(LED1 + i, false);
+            }
+            printf("Currently in the state START!\n");
+            if (*d->pvBuffer == 0)
+            {
+                bs = button_states::W1;
+                printf("Transferred to state W1!\n");
+            }
+            else
+            {
+                break;
+            }
+        }
+        case button_states::W1:
+        {
+            printf("Currently in the state W1!\n");
+
+            if (*d->pvBuffer == 2  && d->flag)
+            {
+                bs = button_states::W2;
+                printf("Transferred to state W2\n");
+                d->flag = false;
+            }
+            else if (*d->pvBuffer != 2  && d->flag)
+            {
+                bs = button_states::START;
+                printf("Sequence interrupted. Transferred to state START\n");
+                d->flag = false;
+                break;
+            }
+            else
+            {
+                d->flag = true;
+                break;
+            }
+        }
+        case button_states::W2:
+        {
+            printf("Currently in the state W2!\n");
+            if (*d->pvBuffer == 1  && d->flag)
+            {
+                bs = button_states::W3;
+                printf("Transferred to state W3\n");
+                d->flag = false;
+            }
+            else if (*d->pvBuffer != 1  && d->flag)
+            {
+                bs = button_states::START;
+                printf("Sequence interrupted. Transferred to state START\n");
+                d->flag = false;
+                break;
+            }
+            else
+            {
+                d->flag = true;
+                break;
+            }
+        }
+        case button_states::W3:
+        {
+            printf("Currently in the state W3!\n");
+            if (*d->pvBuffer == 0  && d->flag)
+            {
+                bs = button_states::W4;
+                printf("Transferred to state W4\n");
+                d->flag = false;
+            }
+            else if (*d->pvBuffer != 0  && d->flag)
+            {
+                bs = button_states::START;
+                printf("Sequence interrupted. Transferred to state START\n");
+                d->flag = false;
+                break;
+            }
+            else
+            {
+                d->flag = true;
+                break;
+            }
+        }
+        case button_states::W4:
+        {
+            printf("Currently in the state W4!\n");
+            if (*d->pvBuffer == 2  && d->flag)
+            {
+                bs = button_states::OPEN;
+                printf("Transferred to state OPEN\n");
+                d->flag = false;
+            }
+            else if (*d->pvBuffer != 2  && d->flag)
+            {
+                bs = button_states::START;
+                printf("Sequence interrupted. Transferred to state START\n");
+                d->flag = false;
+                break;
+            }
+            else
+            {
+                d->flag = true;
+                break;
+            }
+        }
+        case button_states::OPEN:
+        {
+            printf("Currently in the state OPEN!\n");
+            printf("The lock is open!\n");
+            // The part below needs to be fixed (or maybe not)
+            for (int i = 0; i < 3; ++i)
+            {
+                gpio_put(LED1 + i, true);
+            }
+        }
+    }
+}
+
+void consumer_task(void *param)
+{
+    const auto d = (data*) param;
+
+    d->flag = false; // default value
+
+    for (int i = 0; i < 3; ++i)
+    {
+        gpio_init(LED1 + i);
+        gpio_set_dir(LED1 + i, GPIO_OUT);
+    }
+
+    auto bs = button_states::START;
+
+    while (true)
+    {   /*If a button press is received the corresponding LED is lit for 200ms and
+         *the press is processed as shown in the state diagram*/
+        const auto rv = xQueueReceive(d->xQueue, d->pvBuffer, d->xTicksToWait);
+        const uint led = LED1 + *d->pvBuffer;
+        if (rv == pdPASS)
+        {
+            gpio_put(led, true);
+            vTaskDelay(pdMS_TO_TICKS(200));
+            gpio_put(led, false);
+        }
+
+        if (rv == errQUEUE_EMPTY || bs == button_states::OPEN && *d->pvBuffer <= 2 && *d->pvBuffer >= 0)
+        {
+            *d->pvBuffer = -1;
+            bs = button_states::START;
+        }
+
+        // call state machine
+        sm(bs, d);
+    }
+}
 
 int main()
 {
     stdio_init_all();
 
-    queue_data qd[3];
-
     printf("\nBoot\n");
 
-    // all three instances of struct share the same queue handle ( there should be only one queue)
-
-    qd[0].xQueue = xQueueCreate(BUF_SIZE, sizeof(int));
-    for (int i = 1; i < 3; ++i)
-    {
-        qd[i].xQueue = qd[0].xQueue;
-    }
+    data d[3];
 
     for (int i = 0; i < 3; ++i)
     {
-        qd[i].xTicksToWait = pdMS_TO_TICKS(5000);
-        qd[i].button = 9 - i; // GPIO pins 7-9 for all the buttons
-        qd[i].led = 20 + i; // GPIO pins 20-22 for all the LEDs
+        d[i].button = SW1 + i;
     }
 
-    xTaskCreate(button_task, "SW0", 512, (void *) &qd[0], tskIDLE_PRIORITY + 1, nullptr);
-    xTaskCreate(button_task, "SW1", 512, (void *) &qd[1], tskIDLE_PRIORITY + 1, nullptr);
-    xTaskCreate(button_task, "SW2", 512, (void *) &qd[2], tskIDLE_PRIORITY + 1, nullptr);
+    auto qh = xQueueCreate(BUF_SIZE, sizeof(int));
 
-    xTaskCreate(process_task, "Processing", 256, (void *) &qd[0], tskIDLE_PRIORITY + 1, nullptr);
+    for (auto &x : d)
+    {
+        x.xQueue = qh; // same queue handle for every button task since they are writing to the same queue
+        x.xTicksToWait = pdMS_TO_TICKS(5000); // 5 second timeout
+        for (auto &y : x.pvBuffer)
+        {
+            y = -1; // init all the values in all the queues to zero
+        }
+    }
+
+    xTaskCreate(producer_task, "producer1", 512, (void *) &d[0], tskIDLE_PRIORITY + 1, nullptr);
+    xTaskCreate(producer_task, "producer2", 512, (void *) &d[1], tskIDLE_PRIORITY + 1, nullptr);
+    xTaskCreate(producer_task, "producer3", 512, (void *) &d[2], tskIDLE_PRIORITY + 1, nullptr);
+
+    xTaskCreate(consumer_task, "consumer", 512, (void *) &d, tskIDLE_PRIORITY + 1, nullptr);
+
     vTaskStartScheduler();
 
     while(true){};
+
+    return 0;
 }
