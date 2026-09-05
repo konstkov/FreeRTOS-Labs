@@ -17,7 +17,7 @@
 #include "hardware/structs/timer.h"
 
 #define STR_LEN 32
-#define DELAY 10
+#define DELAY 100
 #define LED_DELAY 100
 #define LED 20
 
@@ -43,37 +43,31 @@ extern "C"
 port. **/
 void read_char(void *param)
 {
-    char str[STR_LEN];
-    int pos = 0;
-
     const auto sh = (QueueHandle_t *) param;
+    char c;
 
-    while (uart_is_readable(uart1)) // loop indefinitely while there is data waiting in RX queue
+    fflush(stdout);
+
+    do
     {
-        char c = getchar_timeout_us(0); // read one char with 0 timeout
+        c = getchar_timeout_us(0); // read one char with 0 timeout
         if (c != 0) // if some valid char was received
         {
             printf("Received char:%c\n", c);
-            xSemaphoreGive(sh);// send an indication (= give the binary semaphore) to blinker task
+            printf("ASCII code of received char:%d\n", c);
+            // if( xSemaphoreGive( sh ) != pdTRUE ) // send an indication (= give the binary semaphore) to blinker task
+            // {
+            //             // We would expect this call to fail because we cannot give
+            //             // a semaphore without first "taking" it!
+            // }
         }
         else // Use vTaskDelay to release CPU time to other tasks when no characters are received
         {
             vTaskDelay(DELAY);
         }
-        if (c == '\r' || c == '\n') // if current char is linefeed or CR
-        {
-            str[pos] = '\0'; // put terminating null in corresponding index in the char array
-            printf("Received char:%c\n", c);
-            pos = 0; //return to the first position
-        }
-        else
-        {
-            if (pos < STR_LEN - 1) // if current position less than str length - 1 (last index for \0)
-            {
-                str[pos++] = c; // assign received char to current position and increment the position
-            }
-        }
-    }
+    } while (c != '\0'); // if a character was received just loop back
+
+
 }
 /** This task blinks the led once (100 ms on, 100 ms off) when it receives activity indication (= takes the binary
 semaphore). **/
@@ -84,11 +78,14 @@ void blink_led(void *param)
 
     const auto sh = (QueueHandle_t) param;
 
-    if (xSemaphoreTake(sh, pdMS_TO_TICKS(0)) == pdPASS)
+    while (true)
     {
-        gpio_put(LED,  true);
-        vTaskDelay(pdMS_TO_TICKS(LED_DELAY));
-        gpio_put(LED, false);
+        //if (xSemaphoreTake(sh, pdMS_TO_TICKS(0)) == pdPASS)
+        {
+            gpio_put(LED,  true);
+            vTaskDelay(pdMS_TO_TICKS(LED_DELAY));
+            gpio_put(LED, false);
+        }
     }
 }
 
@@ -102,8 +99,8 @@ int main()
 
     auto sh = xSemaphoreCreateBinary();
 
-    xTaskCreate(read_char, "consumer", 512, (void *) &sh, tskIDLE_PRIORITY + 1, nullptr);
     xTaskCreate(blink_led, "consumer", 512, (void *) &sh, tskIDLE_PRIORITY + 1, nullptr);
+    xTaskCreate(read_char, "consumer", 512, (void *) &sh, tskIDLE_PRIORITY + 1, nullptr);
 
     vTaskStartScheduler();
 
