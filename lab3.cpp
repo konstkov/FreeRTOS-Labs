@@ -17,8 +17,7 @@
 #include "hardware/structs/timer.h"
 
 #define STR_LEN 32
-#define DELAY 100
-#define LONG_DELAY 1000
+#define DELAY 1
 #define LED_DELAY 100
 #define LED 20
 
@@ -44,40 +43,29 @@ extern "C"
 port. **/
 void read_char(void *param)
 {
-    const auto sh = (QueueHandle_t) param;
-
+    auto sh = *(SemaphoreHandle_t*) param;
+    
     while (true) // loop indefinitely while there is data waiting in RX queue
     {
         int c = getchar_timeout_us(0); // read one char with 0 timeout
-        if (c != PICO_ERROR_TIMEOUT) // if some valid char was received
-        {
-            printf("Received char:%c\n", c);
-            printf("ASCII code:%d\n", c);
-            if (sh !=NULL)
-            {
-                if ( xSemaphoreGive( sh) != pdTRUE )
-                {
-                    // We would expect this call to fail because we cannot give
-                    // a semaphore without first "taking" it!
-                }
-                if (xSemaphoreTake(sh, 0))
-                {
-                    // we obtained the semaphore and therefore can use the resource
-                    if  (xSemaphoreGive(sh) != pdTRUE) // send an indication (= give the binary semaphore) to blinker task
-                    {
 
-                    };
-                }
+        if (sh !=NULL)
+        {
+            if (c == PICO_ERROR_TIMEOUT) // if no valid char was received
+            {
+                // Use vTaskDelay to release CPU time to other tasks when no characters are received
+                vTaskDelay(pdMS_TO_TICKS(DELAY));
+                xSemaphoreTake(sh, pdMS_TO_TICKS(0)); // take the semaphore so
+                //that the other process cannot obtain it
+            }
+            else
+            {
+                xSemaphoreGive(sh); // send an indication (= give the binary semaphore) to blinker task
             }
         }
-        else // Use vTaskDelay to release CPU time to other tasks when no characters are received
-        {
-            vTaskDelay(pdMS_TO_TICKS(DELAY));
-        }
     }
-
-
 }
+
 /** This task blinks the led once (100 ms on, 100 ms off) when it receives activity indication (= takes the binary
 semaphore). **/
 void blink_led(void *param)
@@ -85,7 +73,7 @@ void blink_led(void *param)
     gpio_init(LED);
     gpio_set_dir(LED, GPIO_OUT);
 
-    const auto sh = (QueueHandle_t) param;
+    auto sh = *(SemaphoreHandle_t*) param;
 
     while (true)
     {
@@ -96,7 +84,11 @@ void blink_led(void *param)
                 gpio_put(LED,  true);
                 vTaskDelay(pdMS_TO_TICKS(LED_DELAY));
                 gpio_put(LED, false);
-                xSemaphoreGive(sh); // we have finished using shared resource, release the semaphore
+
+                if  (xSemaphoreGive(sh) == pdPASS) // we have finished using shared resource, release the semaphore
+                {
+                    vTaskDelay(pdMS_TO_TICKS(DELAY)); // delay a bit to allow read_char task to run
+                }
             }
         }
         else // We could not obtain the semaphore and can therefore not access the shared resource safely.
@@ -114,7 +106,7 @@ int main()
 
     printf("\nBoot\n");
 
-    auto sh = xSemaphoreCreateBinary();
+    SemaphoreHandle_t sh = xSemaphoreCreateBinary();
 
     xTaskCreate(read_char, "producer", 512, (void *) &sh, tskIDLE_PRIORITY + 1, nullptr);
     xTaskCreate(blink_led, "consumer", 512, (void *) &sh, tskIDLE_PRIORITY + 1, nullptr);
