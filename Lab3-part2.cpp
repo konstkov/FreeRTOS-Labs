@@ -90,41 +90,54 @@ void gpio_events(void *param)
     int temp = 0;
 
     auto r = (rot*) param;
-    const auto rv = xQueueReceive(qh, buf, 0);
+
     while (true)
     {
-        if (*buf==ROT_SW) //means the button was pressed
+        if (xQueueReceive(qh, buf, 0) ==pdPASS)
         {
-            if (wasPressed(r))
+            printf("Received from the queue!\n");
+            if (*buf==ROT_SW) //means the button was pressed
             {
-                while (!gpio_get(ROT_SW)); // wait until the release
-                if (on_state==false)
+                //if (wasPressed(r))
                 {
-                    r->duty=temp;
-                    on_state=true;
-                }
-                else   // on_state==true and SW_1 pressed
-                {
-                    on_state=false;
-                    r->duty=CC_LOW;
-                }
-            }
-        }
-        if (on_state==true)
-        {
-            if (*buf == 1)
-            { // when user rotates knob clockwise brightness smoothly increases
-                if (r->duty<CC_HIGH) r->duty+=STEP;
-            }
-            if (*buf == -1)
-            { // when user rotates knob counter-clockwise brightness smoothly decreases
-                if (r->duty>CC_LOW) r->duty-=STEP;
-                if (r->duty<CC_LOW) //since the step size might be bigger than 1, it might go to negative value and the wrap up going to plus very big number
-                {
-                    r->duty=CC_LOW;
+                    printf("Button pressed!\n");
+                    while (!gpio_get(ROT_SW)); // wait until the release
+                    if (on_state==false)
+                    {
+                        r->duty=temp;
+                        on_state=true;
+                    }
+                    else   // on_state==true and SW_1 pressed
+                    {
+                        on_state=false;
+                        r->duty=CC_LOW;
+                    }
                 }
             }
-            temp = r->duty;
+            if (on_state==true)
+            {
+                if (*buf == 1)
+                { // when user rotates knob clockwise brightness smoothly increases
+                    if (r->duty<CC_HIGH)
+                    {
+                        r->duty+=STEP;
+                        printf("Freq increased!\n");
+                    }
+                }
+                if (*buf == -1)
+                { // when user rotates knob counter-clockwise brightness smoothly decreases
+                    if (r->duty>CC_LOW)
+                    {
+                        r->duty-=STEP;
+                        printf("Freq decreased!\n");
+                    }
+                    if (r->duty<CC_LOW) //since the step size might be bigger than 1, it might go to negative value and the wrap up going to plus very big number
+                    {
+                        r->duty=CC_LOW;
+                    }
+                }
+                temp = r->duty;
+            }
         }
     }
 
@@ -150,13 +163,16 @@ void blink_led(void *param)
     //call pwm_set_enabled to start PWM
     pwm_set_enabled(slice_num, true);
 
-    pwm_set_chan_level (slice_num, channel_num, r->duty); //set the level of the channel
-    vTaskDelay(pdMS_TO_TICKS(LED_DELAY)); //small delay to adjust the smoothness
+    while (true)
+    {
+        pwm_set_chan_level (slice_num, channel_num, r->duty); //set the level of the channel
+        vTaskDelay(pdMS_TO_TICKS(LED_DELAY)); //small delay to adjust the smoothness
+    }
 }
 
 void gpio_callback(uint gpio, uint32_t events)
 {
-    uint event=0;
+    int event = 0;
 
     if (gpio == ROT_A)
     {
@@ -164,7 +180,7 @@ void gpio_callback(uint gpio, uint32_t events)
     }
     if (gpio == ROT_SW) event = ROT_SW;
 
-    xQueueSendToFrontFromISR(qh, (const void*)event, NULL); // change higher priority task woken if needed
+    xQueueSendToFrontFromISR(qh, &event, NULL); // change higher priority task woken if needed
 
     //queue_try_add((queue_t*)events, &event);
 
