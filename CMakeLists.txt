@@ -1,7 +1,9 @@
 add_executable(${ProjectName}
         #lab1.cpp
         #lab2.cpp
-        test.cpp
+        #test.cpp
+        #lab3.cpp
+        Lab3-part2.cpp
 )
 
 target_include_directories(${ProjectName} PRIVATE
@@ -14,9 +16,9 @@ target_compile_definitions(${ProjectName} PRIVATE
 target_link_libraries(${ProjectName} 
         pico_stdlib
         hardware_i2c
+        hardware_pwm
         FreeRTOS-Kernel-Heap4
 )
-
 
 pico_add_extra_outputs(${ProjectName})
 
