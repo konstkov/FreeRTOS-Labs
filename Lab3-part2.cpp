@@ -22,18 +22,15 @@
 //buf size and delays
 #define BUF_SIZE 32
 #define DELAY 1
-#define LED_DELAY 100
 //GPIO pins
 #define LED 20
 #define ROT_A 10
 #define ROT_B 11
 #define ROT_SW 12
-//PWM-related
-#define WRAP_VALUE 999
-#define CC_HIGH 1000
-#define CC_LOW 0
-//
-#define STEP 32
+//Minimum frequency is 2 Hz and maximum frequency is 200 Hz.
+#define MAX_DELAY 250
+#define MIN_DELAY 2 // not accurate
+#define STEP 1
 
 
 SemaphoreHandle_t qh;
@@ -61,19 +58,21 @@ typedef struct rot
     absolute_time_t last_press;
     bool last_pressed;
     uint button;
-    int duty;
+    int delay;
+    bool on_state;
 } rot;
 
 bool wasPressed(rot *sw)
 {
-    const bool pressed = !gpio_get(sw->button); // returns true if pressed (has pullup)
-    if (pressed && !sw->last_pressed && time_reached(sw->last_press)) // adjust timeout according to needs
+    //const bool pressed = true; // returns true if pressed (has pullup)
+    //if (pressed && !sw->last_pressed && time_reached(sw->last_press)) // adjust timeout according to needs
+    if (time_reached(sw->last_press)) // adjust timeout according to needs
     {
         sw->last_press = get_absolute_time();
-        sw->last_pressed = pressed;
+        //sw->last_pressed = pressed;
         return true;
     }
-    sw->last_pressed = pressed;
+    //sw->last_pressed = pressed;
     return false;
 }
 
@@ -85,62 +84,66 @@ turning the knob has no effect. Minimum frequency is 2 Hz and maximum frequency 
 
 void gpio_events(void *param)
 {
-    int buf[BUF_SIZE];
-    bool on_state = false;
-    int temp = 0;
-
     auto r = (rot*) param;
+
+    int buf[BUF_SIZE];
+    r->on_state = false;
+    r->last_press = nil_time;
+    r->last_pressed = (*buf == ROT_SW); // 0 (false) if no events in the queue
+    int temp = 0;
 
     while (true)
     {
-        if (xQueueReceive(qh, buf, 0) ==pdPASS)
+        if (xQueueReceive(qh, buf, 0) == pdPASS)
         {
             printf("Received from the queue!\n");
             if (*buf==ROT_SW) //means the button was pressed
             {
+                printf("Buf equals rot_sw!\n");
                 //if (wasPressed(r))
                 {
                     printf("Button pressed!\n");
                     while (!gpio_get(ROT_SW)); // wait until the release
-                    if (on_state==false)
+                    if (r->on_state==false)
                     {
-                        r->duty=temp;
-                        on_state=true;
+                        r->delay=temp;
+                        r->on_state=true;
+                        printf("The state is ON!\n");
                     }
                     else   // on_state==true and SW_1 pressed
                     {
-                        on_state=false;
-                        r->duty=CC_LOW;
+                        printf("The state is OFF!\n");
+                        r->on_state=false;
+                        r->delay=MIN_DELAY;
                     }
                 }
             }
-            if (on_state==true)
+            if (r->on_state==true)
             {
                 if (*buf == 1)
                 { // when user rotates knob clockwise brightness smoothly increases
-                    if (r->duty<CC_HIGH)
+                    if (r->delay < MAX_DELAY)
                     {
-                        r->duty+=STEP;
-                        printf("Freq increased!\n");
+                        r->delay += STEP;
+                        printf("Delay: %d ms\n", r->delay);
                     }
                 }
                 if (*buf == -1)
                 { // when user rotates knob counter-clockwise brightness smoothly decreases
-                    if (r->duty>CC_LOW)
+                    if (r->delay>MIN_DELAY)
                     {
-                        r->duty-=STEP;
-                        printf("Freq decreased!\n");
+                        r->delay-=STEP;
+                        printf("Delay: %d\n", r->delay);
                     }
-                    if (r->duty<CC_LOW) //since the step size might be bigger than 1, it might go to negative value and the wrap up going to plus very big number
+                    if (r->delay<MIN_DELAY) //since the step size might be bigger than 1, it might go to negative value and the wrap up going to plus very big number
                     {
-                        r->duty=CC_LOW;
+                        r->delay=MIN_DELAY;
                     }
                 }
-                temp = r->duty;
+                temp = r->delay;
             }
         }
     }
-
 }
 
 void blink_led(void *param)
@@ -148,25 +151,14 @@ void blink_led(void *param)
     // typecast rot struct to an appropriate return type
     auto r = (rot*) param;
 
-    //set the function of LEDS to PWM
-    gpio_set_function(LED, GPIO_FUNC_PWM);
-
-    //assign slices to LED pins
-    uint slice_num = pwm_gpio_to_slice_num(LED);
-
-    //assign the wrap(top) value after which the value wraps to zero
-    pwm_set_wrap(slice_num, WRAP_VALUE);
-
-    //assign channels to LED pins
-    uint channel_num = pwm_gpio_to_channel(LED);
-
-    //call pwm_set_enabled to start PWM
-    pwm_set_enabled(slice_num, true);
+    TickType_t xLastWakeTime = xTaskGetTickCount();
 
     while (true)
     {
-        pwm_set_chan_level (slice_num, channel_num, r->duty); //set the level of the channel
-        vTaskDelay(pdMS_TO_TICKS(LED_DELAY)); //small delay to adjust the smoothness
+        gpio_put(LED, true);
+        vTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(r->delay));
+        gpio_put(LED, false);
+        vTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(r->delay));
     }
 }
 
@@ -215,6 +207,9 @@ int main()
         gpio_set_dir(ROT_A + i, GPIO_IN);
     }
     gpio_pull_up(ROT_SW);
+
+    gpio_init(LED);
+    gpio_set_dir(LED, GPIO_OUT);
 
     xTaskCreate(gpio_events, "producer", 512, (void *) &r, tskIDLE_PRIORITY + 1, nullptr);
     xTaskCreate(blink_led, "consumer", 512, (void *) &r, tskIDLE_PRIORITY + 1, nullptr);
