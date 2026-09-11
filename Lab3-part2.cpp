@@ -22,6 +22,7 @@
 //buf size and delays
 #define BUF_SIZE 32
 #define DELAY 1
+#define BUTTON_TIMEOUT 250000
 //GPIO pins
 #define LED 20
 #define ROT_A 10
@@ -29,9 +30,9 @@
 #define ROT_SW 12
 //Minimum frequency is 2 Hz and maximum frequency is 200 Hz.
 #define MAX_DELAY 250
+#define SEC_IN_MS 1000
 #define MIN_DELAY 2 // not accurate
-#define STEP 1
-
+#define STEP 10
 
 SemaphoreHandle_t qh;
 
@@ -57,6 +58,7 @@ typedef struct rot
 {
     absolute_time_t last_press;
     bool last_pressed;
+    bool pressed;
     uint button;
     int delay;
     bool on_state;
@@ -64,15 +66,14 @@ typedef struct rot
 
 bool wasPressed(rot *sw)
 {
-    //const bool pressed = true; // returns true if pressed (has pullup)
-    //if (pressed && !sw->last_pressed && time_reached(sw->last_press)) // adjust timeout according to needs
-    if (time_reached(sw->last_press)) // adjust timeout according to needs
+    if (sw->pressed && !sw->last_pressed && absolute_time_diff_us (sw->last_press, get_absolute_time()) // detect if rising edge (current && ! last) and if timeout was reached
+                    > BUTTON_TIMEOUT) // adjust timeout according to needs
     {
         sw->last_press = get_absolute_time();
-        //sw->last_pressed = pressed;
+        sw->last_pressed = sw->pressed;
         return true;
     }
-    //sw->last_pressed = pressed;
+    sw->last_pressed = sw->pressed;
     return false;
 }
 
@@ -89,78 +90,87 @@ void gpio_events(void *param)
     int buf[BUF_SIZE];
     r->on_state = false;
     r->last_press = nil_time;
-    r->last_pressed = (*buf == ROT_SW); // 0 (false) if no events in the queue
     int temp = 0;
+    r->delay = 250;
+    TickType_t xLastWakeTime = xTaskGetTickCount();
 
     while (true)
     {
         if (xQueueReceive(qh, buf, 0) == pdPASS)
         {
-            printf("Received from the queue!\n");
-            if (*buf==ROT_SW) //means the button was pressed
+            r->pressed = (*buf == ROT_SW); //means the button was pressed
+            r->last_pressed = r->pressed; // 0 (false) if no events in the queue
+            if (wasPressed(r))
             {
-                printf("Buf equals rot_sw!\n");
-                //if (wasPressed(r))
+                printf("Button pressed!\n");
+                while (!gpio_get(ROT_SW)); // wait until the release
+                if (r->on_state==false)
                 {
-                    printf("Button pressed!\n");
-                    while (!gpio_get(ROT_SW)); // wait until the release
-                    if (r->on_state==false)
-                    {
-                        r->delay=temp;
-                        r->on_state=true;
-                        printf("The state is ON!\n");
-                    }
-                    else   // on_state==true and SW_1 pressed
-                    {
-                        printf("The state is OFF!\n");
-                        r->on_state=false;
-                        r->delay=MIN_DELAY;
-                    }
+                    r->delay=temp;
+                    r->on_state=true;
+                    printf("The state is ON!\n");
                 }
-            }
-            if (r->on_state==true)
-            {
-                if (*buf == 1)
-                { // when user rotates knob clockwise brightness smoothly increases
-                    if (r->delay < MAX_DELAY)
-                    {
-                        r->delay += STEP;
-                        printf("Delay: %d ms\n", r->delay);
-                    }
+                else   // on_state==true and SW_1 pressed
+                {
+                    printf("The state is OFF!\n");
+                    r->on_state=false;
+                    r->delay=MIN_DELAY;
                 }
-                if (*buf == -1)
-                { // when user rotates knob counter-clockwise brightness smoothly decreases
-                    if (r->delay>MIN_DELAY)
-                    {
-                        r->delay-=STEP;
-                        printf("Delay: %d\n", r->delay);
-                    }
-                    if (r->delay<MIN_DELAY) //since the step size might be bigger than 1, it might go to negative value and the wrap up going to plus very big number
-                    {
-                        r->delay=MIN_DELAY;
-                    }
-                }
-                temp = r->delay;
             }
         }
+        if (r->on_state==true)
+        {
+            if (*buf == 1)
+            { // when user rotates knob clockwise brightness smoothly increases
+                //auto frequency = SEC_IN_MS / r->delay * 2;
+                if (r->delay < MAX_DELAY)
+                {
+                    r->delay += STEP;
+                    printf("Delay: %d s\n", r->delay);
+                    //printf("Frequency: %d Hz\n", frequency);
+                }
+            }
+            if (*buf == -1)
+            { // when user rotates knob counter-clockwise brightness smoothly decreases
+                //auto frequency = SEC_IN_MS / r->delay * 2;
+                if (r->delay>MIN_DELAY)
+                {
+                    r->delay-=STEP;
+                    printf("Delay: %d s\n", r->delay);
+                    //printf("Frequency: %d Hz\n", frequency);
+                }
+                if (r->delay<MIN_DELAY) //since the step size might be bigger than 1, it might go to negative value and the wrap up going to plus very big number
+                {
+                    r->delay=MIN_DELAY;
+                }
+            }
+            temp = r->delay;
+        }
     }
-}
-
-void blink_led(void *param)
-{
-    // typecast rot struct to an appropriate return type
-    auto r = (rot*) param;
-
-    TickType_t xLastWakeTime = xTaskGetTickCount();
-
-    while (true)
-    {
         gpio_put(LED, true);
-        vTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(r->delay));
+        vTaskDelay(pdMS_TO_TICKS(r->delay));
         gpio_put(LED, false);
-        vTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(r->delay));
-    }
+        vTaskDelay(pdMS_TO_TICKS(r->delay));
 }
+
+
+// void blink_led(void *param)
+// {
+//     // typecast rot struct to an appropriate return type
+//     auto r = (rot*) param;
+//
+//     r->delay = 250;
+//
+//     TickType_t xLastWakeTime = xTaskGetTickCount();
+//
+//     while (true)
+//     {
+//         gpio_put(LED, true);
+//         vTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(r->delay));
+//         gpio_put(LED, false);
+//         vTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(r->delay));
+//     }
+// }
 
 void gpio_callback(uint gpio, uint32_t events)
 {
@@ -212,7 +222,7 @@ int main()
     gpio_set_dir(LED, GPIO_OUT);
 
     xTaskCreate(gpio_events, "producer", 512, (void *) &r, tskIDLE_PRIORITY + 1, nullptr);
-    xTaskCreate(blink_led, "consumer", 512, (void *) &r, tskIDLE_PRIORITY + 1, nullptr);
+    //xTaskCreate(blink_led, "consumer", 512, (void *) &r, tskIDLE_PRIORITY + 1, nullptr);
 
     vTaskStartScheduler();
 
