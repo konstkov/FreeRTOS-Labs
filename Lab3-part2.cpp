@@ -30,9 +30,11 @@
 #define ROT_B 11
 #define ROT_SW 12
 //Minimum frequency is 2 Hz and maximum frequency is 200 Hz.
-#define MAX_DELAY 250
+#define MAX_DELAY 500
+//#define MAX_DELAY 250
 #define SEC_TO_MS 1000
-#define MIN_DELAY 2 // not accurate
+#define MIN_DELAY 5
+//#define MIN_DELAY 2.5
 #define STEP 2
 
 SemaphoreHandle_t qh; // global variable
@@ -103,8 +105,8 @@ void toggle_led_state(rot *sw)
 
 int count_freq(const std::atomic_int &delay)
 {
-    const auto period = delay * 2; // because there are two delays in one period (one when led is on, one when it is off)
-    const auto frequency = (1 * SEC_TO_MS) / period;
+    //const auto period = delay * 2; // because there are two delays in one period (one when led is on, one when it is off)
+    const auto frequency = (1 * SEC_TO_MS) / delay;
     return frequency;
 }
 
@@ -150,7 +152,7 @@ void gpio_events(void *param)
     r->on_state = false;
     r->temp = 0;
     r->count = 0;
-    r->delay = 250;
+    r->delay = MIN_DELAY;
 
     while (true) // main loop
     {
