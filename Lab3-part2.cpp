@@ -10,12 +10,11 @@
 #include "hardware/gpio.h"
 
 // this is needed for runtime statistics
+#include <algorithm>
 #include <atomic>
 #include <cstdlib>
 
 #include "queue.h"
-#include "hardware/iuart.h"
-#include "hardware/pwm.h"
 
 #include "hardware/structs/timer.h"
 #include "pico/util/queue.h"
@@ -32,11 +31,11 @@
 #define ROT_SW 12
 //Minimum frequency is 2 Hz and maximum frequency is 200 Hz.
 #define MAX_DELAY 250
-#define SEC_IN_MS 1000
+#define SEC_TO_MS 1000
 #define MIN_DELAY 2 // not accurate
-#define STEP 10
+#define STEP 2
 
-SemaphoreHandle_t qh;
+SemaphoreHandle_t qh; // global variable
 
 extern "C"
 {
@@ -58,27 +57,30 @@ extern "C"
 
 typedef struct rot
 {
-    absolute_time_t stamp;
-    uint button;
-    int count;
+    absolute_time_t stamp{};
+    uint button{};
+    int count{};
     std::atomic_int delay;
-    bool on_state;
-    int temp;
+    bool on_state{};
+    int temp{};
 } rot;
 
-bool wasPressed(rot *sw)
+bool rotPressed(rot *sw, const int *buf)
 {
-    if (sw->count==0)
+    if (*buf == ROT_SW)
     {
-        sw->stamp=get_absolute_time();
-        ++sw->count;
-    }
-    if (absolute_time_diff_us (sw->stamp, get_absolute_time())>=BUTTON_TIMEOUT) // actual debounce mechanism
-    {
-        return true;
+        if (sw->count==0)
+        {
+            sw->stamp=get_absolute_time();
+            ++sw->count;
+        } // button presses that are closer than 250 ms are ignored
+        if (absolute_time_diff_us (sw->stamp, get_absolute_time())>=BUTTON_TIMEOUT)
+        {
+            sw->count = 0; // reset the count
+            return true;
+        }
     }
     return false;
-
 }
 
 void toggle_led_state(rot *sw)
@@ -99,26 +101,29 @@ void toggle_led_state(rot *sw)
     }
 }
 
-void adjust_delay(rot *r, const int *buf)
+int count_freq(const std::atomic_int &delay)
+{
+    const auto period = delay * 2; // because there are two delays in one period (one when led is on, one when it is off)
+    const auto frequency = (1 * SEC_TO_MS) / period;
+    return frequency;
+}
+
+void adjust_freq(rot *r, const int *buf)
 {
     if (*buf == 1)
     { // when user rotates knob clockwise blinking frequency smoothly increases
-        //auto frequency = SEC_IN_MS / r->delay * 2;
         if (r->delay < MAX_DELAY)
         {
             r->delay += STEP;
-            printf("Delay: %d s\n", (int)(r->delay));
-            //printf("Frequency: %d Hz\n", frequency);
+            printf("Frequency: %d Hz\n", count_freq(r->delay));
         }
     }
     if (*buf == -1)
     { // when user rotates knob counter-clockwise brightness smoothly decreases
-        //auto frequency = SEC_IN_MS / r->delay * 2;
         if (r->delay>MIN_DELAY)
         {
             r->delay-=STEP;
-            printf("Delay: %d s\n", (int)r->delay);
-            //printf("Frequency: %d Hz\n", frequency);
+            printf("Frequency: %d hz\n", count_freq(r->delay));
         }
         if (r->delay<MIN_DELAY) //since the step size might be bigger than 1, it might go to negative value and the wrap up going to plus very big number
         {
@@ -136,53 +141,45 @@ turning the knob has no effect. Minimum frequency is 2 Hz and maximum frequency 
 
 void gpio_events(void *param)
 {
+    // typecast rot struct to an appropriate return type
     auto r = (rot*) param;
 
+    // init rotary encoder-related variables
     int buf[BUF_SIZE];
     r->button = ROT_SW;
     r->on_state = false;
     r->temp = 0;
     r->count = 0;
     r->delay = 250;
-    TickType_t xLastWakeTime = xTaskGetTickCount();
 
-    while (true)
+    while (true) // main loop
     {
-        if (xQueueReceive(qh, buf, 0) == pdPASS)
+        if (xQueueReceive(qh, buf, 0) == pdPASS) // if receiving from the queue was successful
         {
-            if (*buf == ROT_SW)
+            if (rotPressed(r, buf)) // if ROT_SW button pressed toggle led state
             {
-                if (wasPressed(r))
-                {
-                    toggle_led_state(r);
-                }
+                toggle_led_state(r);
             }
-            if (r->on_state==true)
+            if (r->on_state==true) // if LED is on, detect encoder turns and adjust delay and update/print frequency
             {
-                adjust_delay(r, buf);
+                adjust_freq(r, buf);
             }
         }
-        // gpio_put(LED, true);
-        // vTaskDelay(pdMS_TO_TICKS(r->delay));
-        // gpio_put(LED, false);
-        // vTaskDelay(pdMS_TO_TICKS(r->delay));
     }
 }
-
 
 void blink_led(void *param)
 {
     // typecast rot struct to an appropriate return type
     auto r = (rot*) param;
 
-    TickType_t xLastWakeTime = xTaskGetTickCount();
-
-    while (true)
+    while (true) // main loop
     {
-        gpio_put(LED, true);
-        vTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(r->delay));
+        gpio_put(LED, r->on_state); // if state is ON, LED will blink, otherwise it will be off
+        vTaskDelay(pdMS_TO_TICKS(r->delay));
         gpio_put(LED, false);
-        vTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(r->delay));
+        vTaskDelay(pdMS_TO_TICKS(r->delay));
+        // One period (T)
     }
 }
 
@@ -233,6 +230,4 @@ int main()
     vTaskStartScheduler();
 
     while(true){};
-
-    return 0;
 }
