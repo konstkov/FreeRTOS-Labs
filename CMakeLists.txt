@@ -3,7 +3,9 @@ add_executable(${ProjectName}
         #lab2.cpp
         #test.cpp
         #lab3.cpp
-        Lab3-part2.cpp
+        #Lab3-part2.cpp
+        uart/uart_test.cpp
+        uart/PicoOsUart.cpp
 )
 
 target_include_directories(${ProjectName} PRIVATE
